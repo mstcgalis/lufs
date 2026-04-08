@@ -1,0 +1,260 @@
+#!/usr/bin/env zsh
+#
+# lufs — LUFS analysis and track comparison for audio files
+# https://github.com/mstcgalis/lufs
+
+set -euo pipefail
+
+readonly VERSION="1.0.0"
+
+lufs() {
+  local sort_by="integrated"
+  local use_cache=1
+  local show_info=0
+  local -a files
+
+  while [[ ${1:-} == -* ]]; do
+    case $1 in
+      -s|--sort)
+        sort_by=$2; shift 2 ;;
+      --no-cache)
+        use_cache=0; shift ;;
+      -i|--info)
+        show_info=1; shift ;;
+      -v|--version)
+        echo "lufs $VERSION"; return 0 ;;
+      -h|--help)
+        cat <<'HELP'
+Usage: lufs [-s integrated|peak|st|lra] [--no-cache] [-i|--info] [files...]
+
+Analyze LUFS loudness of .wav files using ffmpeg.
+
+Options:
+  -s, --sort COL   Sort by: integrated, peak, st, lra (default: integrated)
+  -i, --info       Show bit depth and sample rate
+  --no-cache       Force re-analysis of all files
+  -v, --version    Show version
+  -h, --help       Show this help
+
+With no file arguments, analyzes all .wav files in the current directory.
+Results are cached per-directory in .lufs_cache (keyed by file modification time).
+
+For 2+ files, shows summary stats and flags:
+  - TP warnings (true peak > -0.1 dBFS)
+  - LRA outliers (> 3 LU from median)
+  - Loudness outliers (> 1 LU from median integrated)
+  - Mono files
+
+Requires: ffmpeg (with ebur128 filter)
+HELP
+        return 0 ;;
+      *) echo "Unknown flag: $1"; return 1 ;;
+    esac
+  done
+
+  if (( $# )); then
+    files=("$@")
+  else
+    files=(*.wav(N))
+    if (( ! ${#files} )); then
+      echo "No .wav files found in current directory"
+      return 1
+    fi
+  fi
+
+  # check for ffmpeg
+  if ! command -v ffmpeg &>/dev/null; then
+    echo "Error: ffmpeg is required but not found in PATH"
+    return 1
+  fi
+
+  # color helpers
+  local c_red=$'\033[31m' c_yel=$'\033[33m' c_dim=$'\033[2m' c_rst=$'\033[0m'
+
+  local cache_file=".lufs_cache"
+  local -A cache_mtime cache_int cache_peak cache_lra cache_st cache_depth cache_sr cache_ch
+
+  # load existing cache
+  if (( use_cache )) && [[ -f $cache_file ]]; then
+    while IFS=$'\t' read -r c_file c_mtime c_int c_peak c_lra c_st c_depth c_sr c_ch; do
+      cache_mtime[$c_file]=$c_mtime
+      cache_int[$c_file]=$c_int; cache_peak[$c_file]=$c_peak
+      cache_lra[$c_file]=$c_lra; cache_st[$c_file]=$c_st
+      cache_depth[$c_file]=$c_depth
+      cache_sr[$c_file]=$c_sr; cache_ch[$c_file]=$c_ch
+    done < "$cache_file"
+  fi
+
+  local -a rows
+  local -A int_map st_map peak_map lra_map depth_map sr_map ch_map
+  local cached=0 analyzed=0
+
+  for f in "${files[@]}"; do
+    local mtime=$(stat -f '%m' "$f" 2>/dev/null)
+
+    if (( use_cache )) && [[ -n "${cache_mtime[$f]}" && "${cache_mtime[$f]}" == "$mtime" ]]; then
+      int_map[$f]=${cache_int[$f]}; peak_map[$f]=${cache_peak[$f]}
+      lra_map[$f]=${cache_lra[$f]}; st_map[$f]=${cache_st[$f]}
+      depth_map[$f]=${cache_depth[$f]}
+      sr_map[$f]=${cache_sr[$f]}; ch_map[$f]=${cache_ch[$f]}
+      (( cached++ ))
+      continue
+    fi
+
+    result=$(ffmpeg -i "$f" -filter:a ebur128=peak=true -f null /dev/null 2>&1)
+    local i=$(echo "$result" | grep -E "^\s+I:"    | awk '{print $2}')
+    local p=$(echo "$result" | grep -E "^\s+Peak:"  | awk '{print $2}')
+    local l=$(echo "$result" | grep -E "^\s+LRA:"   | awk '{print $2}')
+    local s=$(echo "$result" | grep -oE 'S: *-?[0-9]+\.[0-9]+' | sed 's/^S: *//' | sort -g | tail -1)
+
+    local audio_line=$(echo "$result" | grep -E 'Audio:' | head -1)
+    local bd=$(echo "$audio_line" | grep -oE '(s|u|f)(16|24|32|64)(le|be|p)?' | head -1)
+    local sr=$(echo "$audio_line" | grep -oE '[0-9]+ Hz' | head -1 | awk '{print $1}')
+    local ch=$(echo "$audio_line" | grep -oE '(mono|stereo|[0-9]+\.[0-9]+)' | head -1)
+    case $bd in
+      *16*) bd="16" ;; *24*) bd="24" ;; *32*) bd="32" ;; *64*) bd="64" ;; *) bd="-" ;;
+    esac
+
+    int_map[$f]=$i; st_map[$f]=$s; peak_map[$f]=$p; lra_map[$f]=$l
+    depth_map[$f]=$bd; sr_map[$f]=$sr; ch_map[$f]=$ch
+
+    cache_mtime[$f]=$mtime; cache_int[$f]=$i; cache_peak[$f]=$p
+    cache_lra[$f]=$l; cache_st[$f]=$s
+    cache_depth[$f]=$bd
+    cache_sr[$f]=$sr; cache_ch[$f]=$ch
+    (( analyzed++ ))
+  done
+
+  # write cache
+  if (( use_cache )); then
+    : > "$cache_file"
+    for f in "${files[@]}"; do
+      local mtime=$(stat -f '%m' "$f" 2>/dev/null)
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$f" "$mtime" "${int_map[$f]}" "${peak_map[$f]}" "${lra_map[$f]}" "${st_map[$f]}" \
+        "${depth_map[$f]}" "${sr_map[$f]}" "${ch_map[$f]}" >> "$cache_file"
+    done
+    (( cached + analyzed > 0 )) && echo "${c_dim}($analyzed analyzed, $cached cached)${c_rst}"
+    echo ""
+  fi
+
+  # sort
+  local -a sorted
+  _lufs_sort() {
+    local -A map; local key=$1; shift
+    case $key in
+      integrated) map=("${(@kv)int_map}") ;;
+      peak)       map=("${(@kv)peak_map}") ;;
+      st)         map=("${(@kv)st_map}") ;;
+      lra)        map=("${(@kv)lra_map}") ;;
+    esac
+    sorted=()
+    while IFS=$'\t' read -r _ fname; do
+      sorted+=("$fname")
+    done < <(for f in "$@"; do printf '%s\t%s\n' "${map[$f]}" "$f"; done | sort -g)
+  }
+  case $sort_by in
+    integrated|peak|st|lra) _lufs_sort "$sort_by" "${files[@]}" ;;
+    *)                       sorted=("${files[@]}") ;;
+  esac
+  unfunction _lufs_sort
+
+  # find max filename length for padding
+  local max_len=5
+  for f in "${sorted[@]}"; do
+    local name="${f:t:r}"
+    (( ${#name} > max_len )) && max_len=${#name}
+  done
+
+  # header + rows
+  local header
+  if (( show_info )); then
+    header="$(printf "%-${max_len}s   INT      TP       ST MAX   LRA      BITS   RATE" "TRACK")"
+  else
+    header="$(printf "%-${max_len}s   INT      TP       ST MAX   LRA" "TRACK")"
+  fi
+  echo "${c_dim}${header}${c_rst}"
+  printf '%*s\n' "${#header}" '' | tr ' ' '─'
+
+  for f in "${sorted[@]}"; do
+    local name="${f:t:r}"
+    local mono_flag=""
+    [[ "${ch_map[$f]}" == "mono" ]] && mono_flag=" ${c_yel}[MONO]${c_rst}"
+    if (( show_info )); then
+      local sr_display="${sr_map[$f]}"
+      if [[ -n "$sr_display" ]]; then
+        sr_display="$(echo "scale=1; $sr_display / 1000" | bc)k"
+      fi
+      printf "%-${max_len}s   %-8s %-8s %-8s %-8s %-6s %s%s\n" \
+        "$name" "${int_map[$f]}" "${peak_map[$f]}" "${st_map[$f]}" "${lra_map[$f]}" \
+        "${depth_map[$f]}" "$sr_display" "$mono_flag"
+    else
+      printf "%-${max_len}s   %-8s %-8s %-8s %s%s\n" \
+        "$name" "${int_map[$f]}" "${peak_map[$f]}" "${st_map[$f]}" "${lra_map[$f]}" "$mono_flag"
+    fi
+  done
+
+  # summary for 2+ files
+  if (( ${#files} > 1 )); then
+    local i_vals=($(for f in "${files[@]}"; do echo "${int_map[$f]}"; done | sort -g))
+    local s_vals=($(for f in "${files[@]}"; do echo "${st_map[$f]}"; done | sort -g))
+    local p_vals=($(for f in "${files[@]}"; do echo "${peak_map[$f]}"; done | sort -g))
+    local l_vals=($(for f in "${files[@]}"; do echo "${lra_map[$f]}"; done | sort -g))
+
+    local i_range=$(echo "${i_vals[-1]} - ${i_vals[1]}" | bc -l)
+    local s_range=$(echo "${s_vals[-1]} - ${s_vals[1]}" | bc -l)
+    local p_max=${p_vals[-1]}
+
+    echo ""
+    printf "Integrated range: %.1f LU  |  ST max range: %.1f LU  |  TP ceiling: %s dBFS\n" \
+      "$i_range" "$s_range" "$p_max"
+
+    # TP outliers
+    local has_tp_outliers=0
+    for f in "${sorted[@]}"; do
+      local tp=${peak_map[$f]}
+      if (( $(echo "$tp > -0.1" | bc -l) )); then
+        if (( ! has_tp_outliers )); then
+          echo ""
+          echo "${c_red}TP warnings (> -0.1 dBFS):${c_rst}"
+          has_tp_outliers=1
+        fi
+        printf "  ${c_red}%-${max_len}s  %s dBFS${c_rst}\n" "${f:t:r}" "$tp"
+      fi
+    done
+
+    # LRA outliers
+    local lra_median=${l_vals[$(( (${#l_vals} + 1) / 2 ))]}
+    local has_lra_outliers=0
+    for f in "${sorted[@]}"; do
+      local diff=$(echo "${lra_map[$f]} - $lra_median" | bc -l)
+      local abs_diff=$(echo "if ($diff < 0) -1*$diff else $diff" | bc -l)
+      if (( $(echo "$abs_diff > 3.0" | bc -l) )); then
+        if (( ! has_lra_outliers )); then
+          echo ""
+          echo "${c_yel}LRA outliers (> 3 LU from median):${c_rst}"
+          has_lra_outliers=1
+        fi
+        printf "  ${c_yel}%-${max_len}s  %+.1f LU${c_rst}\n" "${f:t:r}" "$diff"
+      fi
+    done
+
+    # loudness outliers
+    local median=${i_vals[$(( (${#i_vals} + 1) / 2 ))]}
+    local has_outliers=0
+    for f in "${sorted[@]}"; do
+      local diff=$(echo "${int_map[$f]} - $median" | bc -l)
+      local abs_diff=$(echo "if ($diff < 0) -1*$diff else $diff" | bc -l)
+      if (( $(echo "$abs_diff > 1.0" | bc -l) )); then
+        if (( ! has_outliers )); then
+          echo ""
+          echo "${c_yel}Loudness outliers (> 1 LU from median):${c_rst}"
+          has_outliers=1
+        fi
+        printf "  ${c_yel}%-${max_len}s  %+.1f LU${c_rst}\n" "${f:t:r}" "$diff"
+      fi
+    done
+  fi
+}
+
+lufs "$@"
