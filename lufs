@@ -3,7 +3,7 @@
 # lufs — LUFS analysis and track comparison for audio files
 # https://github.com/mstcgalis/lufs
 
-set -euo pipefail
+setopt pipe_fail no_unset
 
 readonly VERSION="1.0.0"
 
