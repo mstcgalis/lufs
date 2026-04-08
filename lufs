@@ -5,7 +5,7 @@
 
 setopt pipe_fail no_unset
 
-readonly VERSION="1.1.4"
+readonly VERSION="1.2.0"
 
 lufs() {
   local sort_by="integrated"
@@ -27,7 +27,7 @@ lufs() {
         cat <<'HELP'
 Usage: lufs [-s integrated|peak|st|lra] [--no-cache] [-i|--info] [files...]
 
-Analyze LUFS loudness of .wav files using ffmpeg.
+Analyze LUFS loudness of audio files using ffmpeg.
 
 Options:
   -s, --sort COL   Sort by: integrated, peak, st, lra (default: integrated)
@@ -36,7 +36,8 @@ Options:
   -v, --version    Show version
   -h, --help       Show this help
 
-With no file arguments, analyzes all .wav files in the current directory.
+With no file arguments, analyzes all audio files in the current directory.
+Supported formats: wav, flac, aiff, mp3, ogg, opus, m4a, wma
 Results are cached per-directory in .lufs_cache (keyed by file modification time).
 
 For 2+ files, shows summary stats and flags:
@@ -55,9 +56,9 @@ HELP
   if (( $# )); then
     files=("$@")
   else
-    files=(*.wav(N))
+    files=(*.wav(N) *.flac(N) *.aiff(N) *.aif(N) *.mp3(N) *.ogg(N) *.opus(N) *.m4a(N) *.wma(N))
     if (( ! ${#files} )); then
-      echo "No .wav files found in current directory"
+      echo "No audio files found in current directory"
       return 1
     fi
   fi
@@ -88,8 +89,11 @@ HELP
   local -a rows
   local -A int_map st_map peak_map lra_map depth_map sr_map ch_map
   local cached=0 analyzed=0
+  local total=${#files}
+  local current=0
 
   for f in "${files[@]}"; do
+    (( current++ ))
     local mtime=$(stat -f '%m' "$f" 2>/dev/null)
 
     if (( use_cache )) && [[ -n "${cache_mtime[$f]}" && "${cache_mtime[$f]}" == "$mtime" ]]; then
@@ -101,6 +105,7 @@ HELP
       continue
     fi
 
+    printf "\r${c_dim}analyzing %d/%d: %s${c_rst}\033[K" "$current" "$total" "${f:t}" >&2
     result=$(ffmpeg -i "$f" -filter:a ebur128=peak=true -f null /dev/null 2>&1)
     local i=$(echo "$result" | grep -E "^\s+I:"    | awk '{print $2}')
     local p=$(echo "$result" | grep -E "^\s+Peak:"  | awk '{print $2}')
@@ -124,6 +129,8 @@ HELP
     cache_sr[$f]=$sr; cache_ch[$f]=$ch
     (( analyzed++ ))
   done
+
+  (( analyzed > 0 )) && printf "\r\033[K" >&2
 
   # write cache
   if (( use_cache )); then

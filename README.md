@@ -1,6 +1,6 @@
 # lufs
 
-LUFS analysis and track comparison for `.wav` files. Powered by ffmpeg.
+LUFS analysis and track comparison for audio files. Powered by ffmpeg.
 
 ```
 $ lufs
@@ -53,11 +53,16 @@ lufs [-s integrated|peak|st|lra] [--no-cache] [-i|--info] [files...]
 | `-v, --version` | Show version |
 | `-h, --help` | Show help |
 
-With no file arguments, analyzes all `.wav` files in the current directory.
+With no file arguments, analyzes all audio files in the current directory.
+
+Supported formats: `wav`, `flac`, `aiff`, `mp3`, `ogg`, `opus`, `m4a`, `wma`
+
+> Add `.lufs_cache` to your `.gitignore` if you have audio files in a git repo.
 
 ## Features
 
 - **Caching** — results are cached per-directory in `.lufs_cache`, keyed by file modification time. Only new or changed files are re-analyzed.
+- **Progress indicator** — shows which file is being analyzed (`analyzing 3/12: track.wav`).
 - **Sorting** — sort the table by any loudness column.
 - **TP warnings** — flags tracks with true peak above -0.1 dBFS.
 - **LRA outliers** — flags tracks whose loudness range deviates >3 LU from the median.
