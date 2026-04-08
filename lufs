@@ -5,7 +5,7 @@
 
 setopt pipe_fail no_unset
 
-readonly VERSION="1.1.3"
+readonly VERSION="1.1.4"
 
 lufs() {
   local sort_by="integrated"
@@ -161,7 +161,7 @@ HELP
 
   # find max filename length for padding (capped at 40 chars)
   local max_len=5
-  local max_name_len=60
+  local max_name_len=58
   for f in "${sorted[@]}"; do
     local name="${f:t:r}"
     (( ${#name} > max_len )) && max_len=${#name}

@@ -41,9 +41,9 @@ git add Formula/lufs.rb
 git commit -m "Bump lufs to $TAG"
 git push
 
-# upgrade local install
-brew update
-brew upgrade lufs
+# upgrade local install (pull tap directly to avoid cache race)
+cd "$(brew --repository mstcgalis/tap)" && git pull
+brew reinstall lufs
 
 echo ""
 echo "Deployed lufs $TAG"
