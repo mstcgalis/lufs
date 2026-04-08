@@ -5,7 +5,7 @@
 
 setopt pipe_fail no_unset
 
-readonly VERSION="1.0.0"
+readonly VERSION="1.1.0"
 
 lufs() {
   local sort_by="integrated"
@@ -157,14 +157,26 @@ HELP
     integrated|peak|st|lra) _lufs_sort "$sort_by" "${files[@]}" ;;
     *)                       sorted=("${files[@]}") ;;
   esac
-  unfunction _lufs_sort
+  unfunction _lufs_sort 2>/dev/null
 
-  # find max filename length for padding
+  # find max filename length for padding (capped at 40 chars)
   local max_len=5
+  local max_name_len=40
   for f in "${sorted[@]}"; do
     local name="${f:t:r}"
     (( ${#name} > max_len )) && max_len=${#name}
   done
+  (( max_len > max_name_len )) && max_len=$max_name_len
+
+  # truncate name to max_len, adding … if needed
+  _trunc() {
+    local n="$1"
+    if (( ${#n} > max_len )); then
+      echo "${n[1,$((max_len-1))]}…"
+    else
+      echo "$n"
+    fi
+  }
 
   # header + rows
   local header
@@ -177,7 +189,7 @@ HELP
   printf '%*s\n' "${#header}" '' | tr ' ' '─'
 
   for f in "${sorted[@]}"; do
-    local name="${f:t:r}"
+    local name="$(_trunc "${f:t:r}")"
     local mono_flag=""
     [[ "${ch_map[$f]}" == "mono" ]] && mono_flag=" ${c_yel}[MONO]${c_rst}"
     if (( show_info )); then
@@ -219,7 +231,7 @@ HELP
           echo "${c_red}TP warnings (> -0.1 dBFS):${c_rst}"
           has_tp_outliers=1
         fi
-        printf "  ${c_red}%-${max_len}s  %s dBFS${c_rst}\n" "${f:t:r}" "$tp"
+        printf "  ${c_red}%-${max_len}s  %s dBFS${c_rst}\n" "$(_trunc "${f:t:r}")" "$tp"
       fi
     done
 
@@ -235,7 +247,7 @@ HELP
           echo "${c_yel}LRA outliers (> 3 LU from median):${c_rst}"
           has_lra_outliers=1
         fi
-        printf "  ${c_yel}%-${max_len}s  %+.1f LU${c_rst}\n" "${f:t:r}" "$diff"
+        printf "  ${c_yel}%-${max_len}s  %+.1f LU${c_rst}\n" "$(_trunc "${f:t:r}")" "$diff"
       fi
     done
 
@@ -251,10 +263,12 @@ HELP
           echo "${c_yel}Loudness outliers (> 1 LU from median):${c_rst}"
           has_outliers=1
         fi
-        printf "  ${c_yel}%-${max_len}s  %+.1f LU${c_rst}\n" "${f:t:r}" "$diff"
+        printf "  ${c_yel}%-${max_len}s  %+.1f LU${c_rst}\n" "$(_trunc "${f:t:r}")" "$diff"
       fi
     done
   fi
+
+  unfunction _trunc 2>/dev/null
 }
 
 lufs "$@"
