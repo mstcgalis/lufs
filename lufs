@@ -5,7 +5,7 @@
 
 setopt pipe_fail no_unset
 
-readonly VERSION="1.2.0"
+readonly VERSION="1.2.1"
 
 lufs() {
   local sort_by="integrated"
@@ -96,7 +96,7 @@ HELP
     (( current++ ))
     local mtime=$(stat -f '%m' "$f" 2>/dev/null)
 
-    if (( use_cache )) && [[ -n "${cache_mtime[$f]}" && "${cache_mtime[$f]}" == "$mtime" ]]; then
+    if (( use_cache )) && [[ -n "${cache_mtime[$f]:-}" && "${cache_mtime[$f]:-}" == "$mtime" ]]; then
       int_map[$f]=${cache_int[$f]}; peak_map[$f]=${cache_peak[$f]}
       lra_map[$f]=${cache_lra[$f]}; st_map[$f]=${cache_st[$f]}
       depth_map[$f]=${cache_depth[$f]}
