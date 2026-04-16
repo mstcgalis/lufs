@@ -5,10 +5,10 @@
 
 setopt pipe_fail no_unset
 
-readonly VERSION="1.2.2"
+readonly VERSION="1.2.3"
 
 lufs() {
-  local sort_by="integrated"
+  local sort_by="name"
   local use_cache=1
   local show_info=0
   local -a files
@@ -30,7 +30,7 @@ Usage: lufs [-s integrated|peak|st|lra|name] [--no-cache] [-i|--info] [files...]
 Analyze LUFS loudness of audio files using ffmpeg.
 
 Options:
-  -s, --sort COL   Sort by: integrated, peak, st, lra, name (default: integrated)
+  -s, --sort COL   Sort by: integrated, peak, st, lra, name (default: name)
   -i, --info       Show bit depth and sample rate
   --no-cache       Force re-analysis of all files
   -v, --version    Show version
