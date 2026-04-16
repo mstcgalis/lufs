@@ -5,7 +5,7 @@
 
 setopt pipe_fail no_unset
 
-readonly VERSION="1.2.1"
+readonly VERSION="1.2.2"
 
 lufs() {
   local sort_by="integrated"
@@ -25,12 +25,12 @@ lufs() {
         echo "lufs $VERSION"; return 0 ;;
       -h|--help)
         cat <<'HELP'
-Usage: lufs [-s integrated|peak|st|lra] [--no-cache] [-i|--info] [files...]
+Usage: lufs [-s integrated|peak|st|lra|name] [--no-cache] [-i|--info] [files...]
 
 Analyze LUFS loudness of audio files using ffmpeg.
 
 Options:
-  -s, --sort COL   Sort by: integrated, peak, st, lra (default: integrated)
+  -s, --sort COL   Sort by: integrated, peak, st, lra, name (default: integrated)
   -i, --info       Show bit depth and sample rate
   --no-cache       Force re-analysis of all files
   -v, --version    Show version
@@ -73,21 +73,24 @@ HELP
   local c_red=$'\033[31m' c_yel=$'\033[33m' c_dim=$'\033[2m' c_rst=$'\033[0m'
 
   local cache_file=".lufs_cache"
-  local -A cache_mtime cache_int cache_peak cache_lra cache_st cache_depth cache_sr cache_ch
+  local -A cache_mtime cache_int cache_peak cache_lra cache_st cache_depth cache_sr cache_ch cache_size cache_dur
+  local -A content_key_map  # "mtime:size:dur" -> cached filename, for rename detection
 
   # load existing cache
   if (( use_cache )) && [[ -f $cache_file ]]; then
-    while IFS=$'\t' read -r c_file c_mtime c_int c_peak c_lra c_st c_depth c_sr c_ch; do
+    while IFS=$'\t' read -r c_file c_mtime c_int c_peak c_lra c_st c_depth c_sr c_ch c_size c_dur; do
       cache_mtime[$c_file]=$c_mtime
       cache_int[$c_file]=$c_int; cache_peak[$c_file]=$c_peak
       cache_lra[$c_file]=$c_lra; cache_st[$c_file]=$c_st
       cache_depth[$c_file]=$c_depth
       cache_sr[$c_file]=$c_sr; cache_ch[$c_file]=$c_ch
+      cache_size[$c_file]=$c_size; cache_dur[$c_file]=$c_dur
+      [[ -n "$c_mtime" && -n "$c_size" && -n "$c_dur" ]] && content_key_map["${c_mtime}:${c_size}:${c_dur}"]=$c_file
     done < "$cache_file"
   fi
 
   local -a rows
-  local -A int_map st_map peak_map lra_map depth_map sr_map ch_map
+  local -A int_map st_map peak_map lra_map depth_map sr_map ch_map size_map dur_map
   local cached=0 analyzed=0
   local total=${#files}
   local current=0
@@ -95,12 +98,31 @@ HELP
   for f in "${files[@]}"; do
     (( current++ ))
     local mtime=$(stat -f '%m' "$f" 2>/dev/null)
+    local size=$(stat -f '%z' "$f" 2>/dev/null)
+    size_map[$f]=$size
 
     if (( use_cache )) && [[ -n "${cache_mtime[$f]:-}" && "${cache_mtime[$f]:-}" == "$mtime" ]]; then
       int_map[$f]=${cache_int[$f]}; peak_map[$f]=${cache_peak[$f]}
       lra_map[$f]=${cache_lra[$f]}; st_map[$f]=${cache_st[$f]}
       depth_map[$f]=${cache_depth[$f]}
       sr_map[$f]=${cache_sr[$f]}; ch_map[$f]=${cache_ch[$f]}
+      dur_map[$f]=${cache_dur[$f]:-}
+      (( cached++ ))
+      continue
+    fi
+
+    # quick metadata probe for duration (needed for rename detection content key)
+    local probe; probe=$(ffmpeg -i "$f" 2>&1 || true)
+    local dur=$(echo "$probe" | grep -oE 'Duration: [0-9:\.]+' | head -1 | awk '{print $2}')
+    local content_key="${mtime}:${size}:${dur}"
+
+    if (( use_cache )) && [[ -n "${content_key_map[$content_key]:-}" ]]; then
+      local orig="${content_key_map[$content_key]}"
+      int_map[$f]=${cache_int[$orig]}; peak_map[$f]=${cache_peak[$orig]}
+      lra_map[$f]=${cache_lra[$orig]}; st_map[$f]=${cache_st[$orig]}
+      depth_map[$f]=${cache_depth[$orig]}
+      sr_map[$f]=${cache_sr[$orig]}; ch_map[$f]=${cache_ch[$orig]}
+      dur_map[$f]=$dur
       (( cached++ ))
       continue
     fi
@@ -121,7 +143,7 @@ HELP
     esac
 
     int_map[$f]=$i; st_map[$f]=$s; peak_map[$f]=$p; lra_map[$f]=$l
-    depth_map[$f]=$bd; sr_map[$f]=$sr; ch_map[$f]=$ch
+    depth_map[$f]=$bd; sr_map[$f]=$sr; ch_map[$f]=$ch; dur_map[$f]=$dur
 
     cache_mtime[$f]=$mtime; cache_int[$f]=$i; cache_peak[$f]=$p
     cache_lra[$f]=$l; cache_st[$f]=$s
@@ -137,9 +159,9 @@ HELP
     : > "$cache_file"
     for f in "${files[@]}"; do
       local mtime=$(stat -f '%m' "$f" 2>/dev/null)
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$f" "$mtime" "${int_map[$f]}" "${peak_map[$f]}" "${lra_map[$f]}" "${st_map[$f]}" \
-        "${depth_map[$f]}" "${sr_map[$f]}" "${ch_map[$f]}" >> "$cache_file"
+        "${depth_map[$f]}" "${sr_map[$f]}" "${ch_map[$f]}" "${size_map[$f]}" "${dur_map[$f]:-}" >> "$cache_file"
     done
     (( cached + analyzed > 0 )) && echo "${c_dim}($analyzed analyzed, $cached cached)${c_rst}"
     echo ""
@@ -162,6 +184,12 @@ HELP
   }
   case $sort_by in
     integrated|peak|st|lra) _lufs_sort "$sort_by" "${files[@]}" ;;
+    name)
+      sorted=()
+      while IFS=$'\t' read -r _ fname; do
+        sorted+=("$fname")
+      done < <(for f in "${files[@]}"; do printf '%s\t%s\n' "${f:t:r}" "$f"; done | sort -f)
+      ;;
     *)                       sorted=("${files[@]}") ;;
   esac
   unfunction _lufs_sort 2>/dev/null
