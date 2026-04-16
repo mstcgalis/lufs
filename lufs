@@ -5,10 +5,11 @@
 
 setopt pipe_fail no_unset
 
-readonly VERSION="1.2.4"
+readonly VERSION="1.2.5"
 
 lufs() {
   local sort_by="name"
+  local sort_explicit=0
   local use_cache=1
   local show_info=0
   local -a files
@@ -16,7 +17,7 @@ lufs() {
   while [[ ${1:-} == -* ]]; do
     case $1 in
       -s|--sort)
-        sort_by=$2; shift 2 ;;
+        sort_by=$2; sort_explicit=1; shift 2 ;;
       --no-cache)
         use_cache=0; shift ;;
       -i|--info)
@@ -186,25 +187,30 @@ HELP
     integrated|peak|st|lra) _lufs_sort "$sort_by" "${files[@]}" ;;
     name)
       sorted=()
-      # detect if majority of files have numeric prefixes
-      local num_prefixed=0
-      for f in "${files[@]}"; do
-        local _lead="${${f:t:r}%%[^0-9]*}"
-        [[ -n "$_lead" ]] && (( num_prefixed++ ))
-      done
-      if (( num_prefixed * 2 > ${#files} )); then
-        # sort by leading number
+      if (( sort_explicit )); then
+        # explicit -s name: always alphabetical
         while IFS=$'\t' read -r _ fname; do
           sorted+=("$fname")
-        done < <(for f in "${files[@]}"; do
-          local lead="${${f:t:r}%%[^0-9]*}"
-          printf '%s\t%s\n' "${lead:-0}" "$f"
-        done | sort -n -t$'\t' -k1)
+        done < <(for f in "${files[@]}"; do printf '%s\t%s\n' "${f:t:r}" "$f"; done | sort -f)
       else
-        # sort by integrated loudness
-        while IFS=$'\t' read -r _ fname; do
-          sorted+=("$fname")
-        done < <(for f in "${files[@]}"; do printf '%s\t%s\n' "${int_map[$f]}" "$f"; done | sort -g)
+        # smart default: numeric prefix → numeric sort, else by INT
+        local num_prefixed=0
+        for f in "${files[@]}"; do
+          local _lead="${${f:t:r}%%[^0-9]*}"
+          [[ -n "$_lead" ]] && (( num_prefixed++ ))
+        done
+        if (( num_prefixed * 2 > ${#files} )); then
+          while IFS=$'\t' read -r _ fname; do
+            sorted+=("$fname")
+          done < <(for f in "${files[@]}"; do
+            local lead="${${f:t:r}%%[^0-9]*}"
+            printf '%s\t%s\n' "${lead:-0}" "$f"
+          done | sort -n -t$'\t' -k1)
+        else
+          while IFS=$'\t' read -r _ fname; do
+            sorted+=("$fname")
+          done < <(for f in "${files[@]}"; do printf '%s\t%s\n' "${int_map[$f]}" "$f"; done | sort -g)
+        fi
       fi
       ;;
     *)                       sorted=("${files[@]}") ;;
