@@ -5,13 +5,15 @@
 
 setopt pipe_fail no_unset
 
-readonly VERSION="1.2.5"
+readonly VERSION="1.2.6"
 
 lufs() {
   local sort_by="name"
   local sort_explicit=0
   local use_cache=1
   local show_info=0
+  local use_target=0
+  local target_lufs="" target_name=""
   local -a files
 
   while [[ ${1:-} == -* ]]; do
@@ -20,22 +22,33 @@ lufs() {
         sort_by=$2; sort_explicit=1; shift 2 ;;
       --no-cache)
         use_cache=0; shift ;;
+      -t|--target)
+        use_target=1
+        case "${2:l}" in
+          spotify|youtube|tidal|soundcloud) target_lufs="-14"; target_name="${2:l}" ;;
+          apple|apple-music)                target_lufs="-16"; target_name="apple music" ;;
+          *)
+            target_lufs="$2"
+            [[ "$target_lufs" != -* ]] && target_lufs="-${target_lufs}" ;;
+        esac
+        shift 2 ;;
       -i|--info)
         show_info=1; shift ;;
       -v|--version)
         echo "lufs $VERSION"; return 0 ;;
       -h|--help)
         cat <<'HELP'
-Usage: lufs [-s integrated|peak|st|lra|name] [--no-cache] [-i|--info] [files...]
+Usage: lufs [-s integrated|peak|st|lra|name] [-t TARGET] [--no-cache] [-i|--info] [files...]
 
 Analyze LUFS loudness of audio files using ffmpeg.
 
 Options:
-  -s, --sort COL   Sort by: integrated, peak, st, lra, name (default: name)
-  -i, --info       Show bit depth and sample rate
-  --no-cache       Force re-analysis of all files
-  -v, --version    Show version
-  -h, --help       Show this help
+  -s, --sort COL    Sort by: integrated, peak, st, lra, name (default: name)
+  -t, --target LVL  Compare against target: number or spotify/apple/youtube/tidal
+  -i, --info        Show bit depth and sample rate
+  --no-cache        Force re-analysis of all files
+  -v, --version     Show version
+  -h, --help        Show this help
 
 With no file arguments, analyzes all audio files in the current directory.
 Supported formats: wav, flac, aiff, mp3, ogg, opus, m4a, wma
@@ -158,11 +171,23 @@ HELP
   # write cache
   if (( use_cache )); then
     : > "$cache_file"
+    local -A _current_set
+    for f in "${files[@]}"; do _current_set[$f]=1; done
+    # write current files
     for f in "${files[@]}"; do
       local mtime=$(stat -f '%m' "$f" 2>/dev/null)
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$f" "$mtime" "${int_map[$f]}" "${peak_map[$f]}" "${lra_map[$f]}" "${st_map[$f]}" \
         "${depth_map[$f]}" "${sr_map[$f]}" "${ch_map[$f]}" "${size_map[$f]}" "${dur_map[$f]:-}" >> "$cache_file"
+    done
+    # preserve cached entries for other files that still exist (not re-analyzed this run)
+    for cf in "${(k)cache_mtime[@]}"; do
+      [[ -n "${_current_set[$cf]:-}" ]] && continue
+      [[ ! -f "$cf" ]] && continue
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$cf" "${cache_mtime[$cf]}" "${cache_int[$cf]}" "${cache_peak[$cf]}" \
+        "${cache_lra[$cf]}" "${cache_st[$cf]}" "${cache_depth[$cf]}" \
+        "${cache_sr[$cf]}" "${cache_ch[$cf]}" "${cache_size[$cf]:-}" "${cache_dur[$cf]:-}" >> "$cache_file"
     done
     (( cached + analyzed > 0 )) && echo "${c_dim}($analyzed analyzed, $cached cached)${c_rst}"
     echo ""
@@ -217,7 +242,7 @@ HELP
   esac
   unfunction _lufs_sort 2>/dev/null
 
-  # find max filename length for padding (capped at 40 chars)
+  # find max filename length for padding (capped at 58 chars)
   local max_len=5
   local max_name_len=58
   for f in "${sorted[@]}"; do
@@ -225,6 +250,19 @@ HELP
     (( ${#name} > max_len )) && max_len=${#name}
   done
   (( max_len > max_name_len )) && max_len=$max_name_len
+
+  # extend max_len if truncated names collide
+  local _collision=1
+  while (( _collision && max_len < max_name_len )); do
+    _collision=0
+    local -A _seen_trunc
+    for f in "${sorted[@]}"; do
+      local _n="${f:t:r}"
+      local _t; _t=$(( ${#_n} > max_len )) && _t="${_n[1,$((max_len-1))]}…" || _t="$_n"
+      if [[ -n "${_seen_trunc[$_t]:-}" ]]; then _collision=1; (( max_len++ )); break; fi
+      _seen_trunc[$_t]=1
+    done
+  done
 
   # truncate name to max_len, adding … if needed
   _trunc() {
@@ -239,9 +277,22 @@ HELP
   # header + rows
   local header
   if (( show_info )); then
-    header="$(printf "%-${max_len}s   INT      TP       ST MAX   LRA      BITS   RATE" "TRACK")"
+    if (( use_target )); then
+      header="$(printf "%-${max_len}s   INT      TP       ST MAX   LRA      DELTA    BITS   RATE" "TRACK")"
+    else
+      header="$(printf "%-${max_len}s   INT      TP       ST MAX   LRA      BITS   RATE" "TRACK")"
+    fi
   else
-    header="$(printf "%-${max_len}s   INT      TP       ST MAX   LRA" "TRACK")"
+    if (( use_target )); then
+      header="$(printf "%-${max_len}s   INT      TP       ST MAX   LRA      DELTA" "TRACK")"
+    else
+      header="$(printf "%-${max_len}s   INT      TP       ST MAX   LRA" "TRACK")"
+    fi
+  fi
+  if (( use_target )); then
+    local target_label="$target_lufs LUFS"
+    [[ -n "$target_name" ]] && target_label+="  ($target_name)"
+    printf "${c_dim}target: %s${c_rst}\n" "$target_label"
   fi
   echo "${c_dim}${header}${c_rst}"
   printf '%*s\n' "${#header}" '' | tr ' ' '─'
@@ -250,17 +301,44 @@ HELP
     local name="$(_trunc "${f:t:r}")"
     local mono_flag=""
     [[ "${ch_map[$f]}" == "mono" ]] && mono_flag=" ${c_yel}[MONO]${c_rst}"
+    local delta_str=""
+    if (( use_target )); then
+      local _dv _da _dr _dp
+      _dv=$(echo "${int_map[$f]} - ($target_lufs)" | bc -l)
+      _da=$(echo "if ($_dv < 0) -1*$_dv else $_dv" | bc -l)
+      _dr=$(printf "%+.1f" "$_dv")
+      _dp=$(printf "%-8s" "$_dr")
+      if (( $(echo "$_da <= 1.0" | bc -l) )); then
+        delta_str="${c_grn}${_dp}${c_rst}"
+      elif (( $(echo "$_da <= 3.0" | bc -l) )); then
+        delta_str="${c_yel}${_dp}${c_rst}"
+      else
+        delta_str="${c_red}${_dp}${c_rst}"
+      fi
+    fi
     if (( show_info )); then
       local sr_display="${sr_map[$f]}"
       if [[ -n "$sr_display" ]]; then
         sr_display="$(echo "scale=1; $sr_display / 1000" | bc)k"
       fi
-      printf "%-${max_len}s   %-8s %-8s %-8s %-8s %-6s %s%s\n" \
-        "$name" "${int_map[$f]}" "${peak_map[$f]}" "${st_map[$f]}" "${lra_map[$f]}" \
-        "${depth_map[$f]}" "$sr_display" "$mono_flag"
+      if (( use_target )); then
+        printf "%-${max_len}s   %-8s %-8s %-8s %-8s %s %-6s %s%s\n" \
+          "$name" "${int_map[$f]}" "${peak_map[$f]}" "${st_map[$f]}" "${lra_map[$f]}" \
+          "$delta_str" "${depth_map[$f]}" "$sr_display" "$mono_flag"
+      else
+        printf "%-${max_len}s   %-8s %-8s %-8s %-8s %-6s %s%s\n" \
+          "$name" "${int_map[$f]}" "${peak_map[$f]}" "${st_map[$f]}" "${lra_map[$f]}" \
+          "${depth_map[$f]}" "$sr_display" "$mono_flag"
+      fi
     else
-      printf "%-${max_len}s   %-8s %-8s %-8s %s%s\n" \
-        "$name" "${int_map[$f]}" "${peak_map[$f]}" "${st_map[$f]}" "${lra_map[$f]}" "$mono_flag"
+      if (( use_target )); then
+        printf "%-${max_len}s   %-8s %-8s %-8s %-8s %s%s\n" \
+          "$name" "${int_map[$f]}" "${peak_map[$f]}" "${st_map[$f]}" "${lra_map[$f]}" \
+          "$delta_str" "$mono_flag"
+      else
+        printf "%-${max_len}s   %-8s %-8s %-8s %s%s\n" \
+          "$name" "${int_map[$f]}" "${peak_map[$f]}" "${st_map[$f]}" "${lra_map[$f]}" "$mono_flag"
+      fi
     fi
   done
 
