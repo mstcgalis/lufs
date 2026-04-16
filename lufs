@@ -5,7 +5,7 @@
 
 setopt pipe_fail no_unset
 
-readonly VERSION="1.2.3"
+readonly VERSION="1.2.4"
 
 lufs() {
   local sort_by="name"
@@ -186,9 +186,26 @@ HELP
     integrated|peak|st|lra) _lufs_sort "$sort_by" "${files[@]}" ;;
     name)
       sorted=()
-      while IFS=$'\t' read -r _ fname; do
-        sorted+=("$fname")
-      done < <(for f in "${files[@]}"; do printf '%s\t%s\n' "${f:t:r}" "$f"; done | sort -f)
+      # detect if majority of files have numeric prefixes
+      local num_prefixed=0
+      for f in "${files[@]}"; do
+        local _lead="${${f:t:r}%%[^0-9]*}"
+        [[ -n "$_lead" ]] && (( num_prefixed++ ))
+      done
+      if (( num_prefixed * 2 > ${#files} )); then
+        # sort by leading number
+        while IFS=$'\t' read -r _ fname; do
+          sorted+=("$fname")
+        done < <(for f in "${files[@]}"; do
+          local lead="${${f:t:r}%%[^0-9]*}"
+          printf '%s\t%s\n' "${lead:-0}" "$f"
+        done | sort -n -t$'\t' -k1)
+      else
+        # sort by integrated loudness
+        while IFS=$'\t' read -r _ fname; do
+          sorted+=("$fname")
+        done < <(for f in "${files[@]}"; do printf '%s\t%s\n' "${int_map[$f]}" "$f"; done | sort -g)
+      fi
       ;;
     *)                       sorted=("${files[@]}") ;;
   esac
