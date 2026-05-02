@@ -5,7 +5,7 @@
 
 setopt pipe_fail no_unset
 
-readonly VERSION="1.2.7"
+readonly VERSION="1.2.8"
 
 lufs() {
   local sort_by="name"
@@ -297,7 +297,11 @@ HELP
   echo "${c_dim}${header}${c_rst}"
   printf '%*s\n' "${#header}" '' | tr ' ' '─'
 
+  local row_idx=0
   for f in "${sorted[@]}"; do
+    (( row_idx++ ))
+    local row_dim=""
+    (( row_idx % 2 == 0 )) && row_dim="$c_dim"
     local name="$(_trunc "${f:t:r}")"
     local mono_flag=""
     [[ "${ch_map[$f]}" == "mono" ]] && mono_flag=" ${c_yel}[MONO]${c_rst}"
@@ -322,21 +326,21 @@ HELP
         sr_display="$(echo "scale=1; $sr_display / 1000" | bc)k"
       fi
       if (( use_target )); then
-        printf "%-${max_len}s   %-8s %-8s %-8s %-8s %s %-6s %s%s\n" \
+        printf "${row_dim}%-${max_len}s   %-8s %-8s %-8s %-8s %s %-6s %s%s${c_rst}\n" \
           "$name" "${int_map[$f]}" "${peak_map[$f]}" "${st_map[$f]}" "${lra_map[$f]}" \
           "$delta_str" "${depth_map[$f]}" "$sr_display" "$mono_flag"
       else
-        printf "%-${max_len}s   %-8s %-8s %-8s %-8s %-6s %s%s\n" \
+        printf "${row_dim}%-${max_len}s   %-8s %-8s %-8s %-8s %-6s %s%s${c_rst}\n" \
           "$name" "${int_map[$f]}" "${peak_map[$f]}" "${st_map[$f]}" "${lra_map[$f]}" \
           "${depth_map[$f]}" "$sr_display" "$mono_flag"
       fi
     else
       if (( use_target )); then
-        printf "%-${max_len}s   %-8s %-8s %-8s %-8s %s%s\n" \
+        printf "${row_dim}%-${max_len}s   %-8s %-8s %-8s %-8s %s%s${c_rst}\n" \
           "$name" "${int_map[$f]}" "${peak_map[$f]}" "${st_map[$f]}" "${lra_map[$f]}" \
           "$delta_str" "$mono_flag"
       else
-        printf "%-${max_len}s   %-8s %-8s %-8s %s%s\n" \
+        printf "${row_dim}%-${max_len}s   %-8s %-8s %-8s %s%s${c_rst}\n" \
           "$name" "${int_map[$f]}" "${peak_map[$f]}" "${st_map[$f]}" "${lra_map[$f]}" "$mono_flag"
       fi
     fi
@@ -358,18 +362,20 @@ HELP
       "$i_range" "$s_range" "$p_max"
 
     # TP outliers
-    local has_tp_outliers=0
+    local -a tp_outlier_rows
     for f in "${sorted[@]}"; do
       local tp=${peak_map[$f]}
       if (( $(echo "$tp > -0.1" | bc -l) )); then
-        if (( ! has_tp_outliers )); then
-          echo ""
-          echo "${c_red}TP warnings (> -0.1 dBFS):${c_rst}"
-          has_tp_outliers=1
-        fi
-        printf "  ${c_red}%-${max_len}s  %s dBFS${c_rst}\n" "$(_trunc "${f:t:r}")" "$tp"
+        tp_outlier_rows+=("${f}"$'\t'"${tp}")
       fi
     done
+    if (( ${#tp_outlier_rows} > 0 )); then
+      echo ""
+      echo "${c_red}TP warnings (> -0.1 dBFS): ${#tp_outlier_rows}${c_rst}"
+      while IFS=$'\t' read -r _f _tp; do
+        printf "  ${c_red}%-${max_len}s  %s dBFS${c_rst}\n" "$(_trunc "${_f:t:r}")" "$_tp"
+      done < <(printf '%s\n' "${tp_outlier_rows[@]}")
+    fi
 
     # LRA outliers
     local lra_median=${l_vals[$(( (${#l_vals} + 1) / 2 ))]}
@@ -383,7 +389,7 @@ HELP
     done
     if (( ${#lra_outlier_rows} > 0 )); then
       echo ""
-      echo "${c_yel}LRA outliers (> 3 LU from median):${c_rst}"
+      echo "${c_yel}LRA outliers (> 3 LU from median): ${#lra_outlier_rows}${c_rst}"
       while IFS=$'\t' read -r _abs _f _diff; do
         printf "  ${c_yel}%-${max_len}s  %+.1f LU${c_rst}\n" "$(_trunc "${_f:t:r}")" "$_diff"
       done < <(printf '%s\n' "${lra_outlier_rows[@]}" | sort -rg -t$'\t' -k1)
@@ -401,7 +407,7 @@ HELP
     done
     if (( ${#loudness_outlier_rows} > 0 )); then
       echo ""
-      echo "${c_yel}Loudness outliers (> 1 LU from median):${c_rst}"
+      echo "${c_yel}Loudness outliers (> 1 LU from median): ${#loudness_outlier_rows}${c_rst}"
       while IFS=$'\t' read -r _abs _f _diff; do
         printf "  ${c_yel}%-${max_len}s  %+.1f LU${c_rst}\n" "$(_trunc "${_f:t:r}")" "$_diff"
       done < <(printf '%s\n' "${loudness_outlier_rows[@]}" | sort -rg -t$'\t' -k1)
