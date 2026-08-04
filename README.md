@@ -74,7 +74,3 @@ Supported formats: `wav`, `flac`, `aiff`, `mp3`, `ogg`, `opus`, `m4a`, `wma`
 
 - [ffmpeg](https://ffmpeg.org/) (with ebur128 filter)
 - zsh
-
-## License
-
-MIT
