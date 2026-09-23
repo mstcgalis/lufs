@@ -5,7 +5,7 @@
 
 setopt pipe_fail no_unset
 
-readonly VERSION="1.2.8"
+readonly VERSION="1.2.9"
 
 lufs() {
   local sort_by="name"
@@ -99,7 +99,7 @@ HELP
       cache_depth[$c_file]=$c_depth
       cache_sr[$c_file]=$c_sr; cache_ch[$c_file]=$c_ch
       cache_size[$c_file]=$c_size; cache_dur[$c_file]=$c_dur
-      [[ -n "$c_mtime" && -n "$c_size" && -n "$c_dur" ]] && content_key_map["${c_mtime}:${c_size}:${c_dur}"]=$c_file
+      [[ -n "$c_mtime" && -n "$c_size" ]] && content_key_map["${c_mtime}:${c_size}"]=$c_file
     done < "$cache_file"
   fi
 
@@ -125,10 +125,7 @@ HELP
       continue
     fi
 
-    # quick metadata probe for duration (needed for rename detection content key)
-    local probe; probe=$(ffmpeg -i "$f" 2>&1 || true)
-    local dur=$(echo "$probe" | grep -oE 'Duration: [0-9:\.]+' | head -1 | awk '{print $2}')
-    local content_key="${mtime}:${size}:${dur}"
+    local content_key="${mtime}:${size}"
 
     if (( use_cache )) && [[ -n "${content_key_map[$content_key]:-}" ]]; then
       local orig="${content_key_map[$content_key]}"
@@ -136,7 +133,6 @@ HELP
       lra_map[$f]=${cache_lra[$orig]}; st_map[$f]=${cache_st[$orig]}
       depth_map[$f]=${cache_depth[$orig]}
       sr_map[$f]=${cache_sr[$orig]}; ch_map[$f]=${cache_ch[$orig]}
-      dur_map[$f]=$dur
       (( cached++ ))
       continue
     fi
@@ -157,7 +153,7 @@ HELP
     esac
 
     int_map[$f]=$i; st_map[$f]=$s; peak_map[$f]=$p; lra_map[$f]=$l
-    depth_map[$f]=$bd; sr_map[$f]=$sr; ch_map[$f]=$ch; dur_map[$f]=$dur
+    depth_map[$f]=$bd; sr_map[$f]=$sr; ch_map[$f]=$ch
 
     cache_mtime[$f]=$mtime; cache_int[$f]=$i; cache_peak[$f]=$p
     cache_lra[$f]=$l; cache_st[$f]=$s
@@ -258,7 +254,8 @@ HELP
     local -A _seen_trunc
     for f in "${sorted[@]}"; do
       local _n="${f:t:r}"
-      local _t; _t=$(( ${#_n} > max_len )) && _t="${_n[1,$((max_len-1))]}…" || _t="$_n"
+      local _t="$_n"
+      (( ${#_n} > max_len )) && _t="${_n[1,$((max_len-1))]}…"
       if [[ -n "${_seen_trunc[$_t]:-}" ]]; then _collision=1; (( max_len++ )); break; fi
       _seen_trunc[$_t]=1
     done
